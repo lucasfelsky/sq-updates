@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isAuthenticated() && request.auth.token.email_verified == true;
+    }
+
+    function getMyRole() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    function isAdmin() {
+      return getMyRole() == "admin";
+    }
+
+    function isComex() {
+      let r = getMyRole();
+      return r == "comex" || r == "admin";
+    }
+
+    function isOwnerOfProcess(processId) {
+      return isAuthenticated()
+        && exists(/databases/$(database)/documents/processes/$(processId))
+        && request.auth.uid in get(/databases/$(database)/documents/processes/$(processId)).data.owners;
+    }
+
+    match /users/{uid} {
+      allow read: if isAuthenticated() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAuthenticated() && (request.auth.uid == uid || isAdmin());
+      allow update: if isAuthenticated() && (request.auth.uid == uid || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /barStatus/{docId} {
+      allow read: if isVerified();
+      allow create, update, delete: if isVerified() && isComex();
+    }
+
+    match /processes/{processId} {
+      allow read: if isVerified();
+      allow create: if isComex() && isVerified();
+      allow update: if isVerified() && (isComex() || isOwnerOfProcess(processId));
+      allow delete: if isVerified() && (isComex() || isOwnerOfProcess(processId));
+
+      match /messages/{msgId} {
+        allow read: if isVerified();
+        allow create: if isVerified();
+        allow update, delete: if isVerified() && (isComex() || isOwnerOfProcess(processId));
+      }
+
+      match /attachments/{attId} {
+        allow read: if isVerified();
+        allow create: if isVerified() && (isComex() || isOwnerOfProcess(processId));
+        allow delete: if isVerified() && (isComex() || isOwnerOfProcess(processId));
+      }
+
+      match /audits/{auditId} {
+        allow read: if isVerified();
+        allow create: if isVerified() && (isComex() || isAdmin());
+        allow delete: if isVerified() && isAdmin();
+      }
+    }
+
+    match /audits/{auditId} {
+      allow read: if isVerified();
+      allow create: if isVerified() && (isComex() || isAdmin());
+      allow update, delete: if isVerified() && isAdmin();
+    }
+
+    match /invites/{inviteId} {
+      allow read, create, delete: if isAuthenticated() && isAdmin();
+    }
+
+    match /{document=**} {
+      allow read: if isVerified();
+      allow write: if false;
+    }
+  }
+}
