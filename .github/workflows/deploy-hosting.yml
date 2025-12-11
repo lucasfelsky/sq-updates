@@ -1,35 +1,31 @@
-name: Deploy to Firebase Hosting
+name: Deploy to Firebase Hosting (production)
 
 on:
   push:
     branches:
-      - main
+      - main    # branch que publica em produção
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'   # <-- ALTERADO para Node 20 (necessário para firebase-tools v15+)
-          cache: 'npm'
+          node-version: 20
 
-      - name: Install dependencies
+      - name: Install deps
         run: npm ci
 
       - name: Build
         run: npm run build
 
-      - name: Deploy to Firebase Hosting (preview channel)
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-            repoToken: "${{ secrets.GITHUB_TOKEN }}"
-            firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}"
-            projectId: "${{ secrets.FIREBASE_PROJECT_ID }}"
-            channelId: "preview-${{ github.run_id }}"   # <- OBRIGATÓRIO para preview (ex: preview-123456789)
-            expires: "7d"
+      - name: Deploy to Firebase Hosting (production)
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          # se quiser definir project id via secret:
+          # FIREBASE_PROJECT: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          npx firebase-tools@latest deploy --only hosting --project sq-comex-updates

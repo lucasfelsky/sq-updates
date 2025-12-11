@@ -1,22 +1,38 @@
 // src/pages/Home.jsx
 import React, { useEffect, useState } from 'react'
-import { db } from '../firebase'
-import { doc, getDoc, updateDoc, setDoc, collection, getDocs } from 'firebase/firestore'
 import useAuth from '../hooks/useAuth'
+import { db } from '../firebase'
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  setDoc,
+  collection,
+  getDocs,
+  serverTimestamp
+} from 'firebase/firestore'
 
 export default function Home() {
   const auth = useAuth() || {}
   const role = auth.role || auth.userProfile?.role || null
+  const isVerifiedUser = auth.user?.emailVerified || auth.user?.emailVerified === true || auth.emailVerified // best-effort
 
+  // announcements
   const [annText, setAnnText] = useState('')
   const [annError, setAnnError] = useState(null)
-  const [editing, setEditing] = useState(false)
+  const [editingAnn, setEditingAnn] = useState(false)
 
+  // barra
   const [barra, setBarra] = useState(null)
   const [barraError, setBarraError] = useState(null)
+  const [editingBarra, setEditingBarra] = useState(false)
+  const [editStatus, setEditStatus] = useState('PRATICÁVEL')
+  const [editNote, setEditNote] = useState('')
 
+  // processes
   const [processes, setProcesses] = useState([])
   const [processesError, setProcessesError] = useState(null)
+
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -31,16 +47,16 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // === ANNOUNCEMENTS ===
+  // -------------------------
+  // Announcements
+  // -------------------------
   const loadAnnouncements = async () => {
     try {
       setAnnError(null)
-      const snap = await getDoc(doc(db, 'announcements', 'home'))
-      if (snap.exists()) {
-        setAnnText(snap.data().text || '')
-      } else {
-        setAnnText('')
-      }
+      const ref = doc(db, 'announcements', 'home')
+      const snap = await getDoc(ref)
+      if (snap.exists()) setAnnText(snap.data().text || '')
+      else setAnnText('')
     } catch (err) {
       console.error('loadAnnouncements error', err)
       setAnnError(err)
@@ -48,10 +64,9 @@ export default function Home() {
     }
   }
 
-  // Save: atualiza se existe, caso contrário cria com setDoc(..., {merge:true})
   const saveAnnouncements = async () => {
     try {
-      // verificação simples de permissão no front (UI) — a regra real é no Firestore
+      // quick front check
       if (!(role === 'admin' || role === 'comex')) {
         alert('Apenas administradores/comex podem editar avisos.')
         return
@@ -59,21 +74,23 @@ export default function Home() {
 
       const ref = doc(db, 'announcements', 'home')
       const snap = await getDoc(ref)
-      if (snap.exists()) {
-        await updateDoc(ref, { text: annText, updatedAt: new Date() })
-        console.log('saveAnnouncements: updated existing doc')
-      } else {
-        // cria o doc caso não exista (merge: true caso queira preservar outros campos)
-        await setDoc(ref, { text: annText, createdAt: new Date(), updatedAt: new Date() }, { merge: true })
-        console.log('saveAnnouncements: created doc via setDoc')
+      const payload = {
+        text: annText,
+        updatedAt: serverTimestamp()
       }
 
-      setEditing(false)
-      // recarrega para garantir consistência
+      if (snap.exists()) {
+        await updateDoc(ref, payload)
+        console.log('saveAnnouncements: updated')
+      } else {
+        await setDoc(ref, { ...payload, createdAt: serverTimestamp() }, { merge: true })
+        console.log('saveAnnouncements: created via setDoc')
+      }
+
+      setEditingAnn(false)
       await loadAnnouncements()
     } catch (err) {
       console.error('saveAnnouncements error', err)
-      // trata permission-denied separadamente
       if (err?.code === 'permission-denied' || /permission/i.test(String(err))) {
         alert('Você não tem permissão para editar os avisos. Apenas administradores/comex podem editar.')
       } else {
@@ -82,18 +99,25 @@ export default function Home() {
     }
   }
 
-  // === BARRA ===
+  // -------------------------
+  // Barra (status)
+  // -------------------------
   const loadBarra = async () => {
     try {
       setBarraError(null)
-      // lê /barra/status (se for barStatus, as regras já aceitam ambos)
-      const snap = await getDoc(doc(db, 'barra', 'status'))
-      if (snap.exists()) setBarra(snap.data())
-      else {
-        // fallback: tentar /barStatus/status
-        const snap2 = await getDoc(doc(db, 'barStatus', 'status'))
-        if (snap2.exists()) setBarra(snap2.data())
-        else setBarra(null)
+      const ref = doc(db, 'barra', 'status')
+      let snap = await getDoc(ref)
+      if (!snap.exists()) {
+        // fallback para barStatus/status (caso schema antigo)
+        snap = await getDoc(doc(db, 'barStatus', 'status'))
+      }
+      if (snap.exists()) {
+        setBarra(snap.data())
+        // sincroniza editor
+        setEditStatus(snap.data().status || 'PRATICÁVEL')
+        setEditNote(snap.data().note || '')
+      } else {
+        setBarra(null)
       }
     } catch (err) {
       console.error('loadBarra error', err)
@@ -102,7 +126,44 @@ export default function Home() {
     }
   }
 
-  // === PROCESSES PRÓXIMOS ===
+  const saveBarra = async () => {
+    try {
+      if (!(role === 'admin' || role === 'comex')) {
+        alert('Apenas administradores/comex podem editar o status da barra.')
+        return
+      }
+
+      const ref = doc(db, 'barra', 'status')
+      const snap = await getDoc(ref)
+      const payload = {
+        status: editStatus,
+        note: editNote || '',
+        updatedAt: serverTimestamp()
+      }
+
+      if (snap.exists()) {
+        await updateDoc(ref, payload)
+        console.log('saveBarra: updated')
+      } else {
+        await setDoc(ref, { ...payload, createdAt: serverTimestamp() }, { merge: true })
+        console.log('saveBarra: created')
+      }
+
+      await loadBarra()
+      setEditingBarra(false)
+    } catch (err) {
+      console.error('saveBarra error', err)
+      if (err?.code === 'permission-denied' || /permission/i.test(String(err))) {
+        alert('Você não tem permissão para alterar a barra (verifique verificação de e-mail e role).')
+      } else {
+        alert('Erro ao salvar barra: ' + (err?.message || String(err)))
+      }
+    }
+  }
+
+  // -------------------------
+  // Processes próximos (15 dias)
+  // -------------------------
   const loadUpcomingProcesses = async () => {
     try {
       setProcessesError(null)
@@ -142,7 +203,7 @@ export default function Home() {
   const statusStyle = {
     PRATICÁVEL: 'bg-green-500 text-white',
     IMPRATICÁVEL: 'bg-red-500 text-white',
-    'PRATICÁVEL C/ RESTRIÇÕES': 'bg-yellow-500 text-black'
+    'PRATICÁVEL C/ RESTRIÇÕES': 'bg-yellow-400 text-black'
   }
 
   return (
@@ -151,13 +212,13 @@ export default function Home() {
       <div className="bg-white shadow p-6 rounded-xl border">
         <h2 className="text-xl font-bold mb-3">Avisos Importantes</h2>
 
-        {annError ? (
+        {annError && (
           <div className="text-red-600 mb-3">
             Não foi possível carregar os avisos. Verifique permissões ou contate o administrador.
           </div>
-        ) : null}
+        )}
 
-        {editing ? (
+        {editingAnn ? (
           <>
             <textarea
               value={annText}
@@ -169,7 +230,7 @@ export default function Home() {
               <button className="px-4 py-2 bg-blue-600 text-white rounded-lg" onClick={saveAnnouncements}>
                 Salvar
               </button>
-              <button className="px-4 py-2 bg-gray-300 rounded-lg" onClick={() => { setEditing(false); loadAnnouncements() }}>
+              <button className="px-4 py-2 bg-gray-300 rounded-lg" onClick={() => { setEditingAnn(false); loadAnnouncements() }}>
                 Cancelar
               </button>
             </div>
@@ -180,7 +241,7 @@ export default function Home() {
             {(role === 'admin' || role === 'comex') && (
               <button
                 className="mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg"
-                onClick={() => setEditing(true)}
+                onClick={() => setEditingAnn(true)}
               >
                 Editar Avisos
               </button>
@@ -189,7 +250,7 @@ export default function Home() {
         )}
       </div>
 
-      {/* BARRA DE NAVEGAÇÃO */}
+      {/* BARRA DE ITAJAÍ / NAVEGANTES */}
       <div className="bg-white shadow p-6 rounded-xl border">
         <h2 className="text-xl font-bold mb-4">Condições da Barra de Itajaí / Navegantes</h2>
 
@@ -198,11 +259,51 @@ export default function Home() {
         ) : null}
 
         {barra ? (
-          <div className={`inline-block px-4 py-2 rounded-lg font-bold ${statusStyle[barra.status] ?? 'bg-gray-200 text-gray-800'}`}>
-            {barra.status}
-          </div>
+          <>
+            <div className="flex items-center gap-4 mb-3">
+              <div className={`inline-block px-4 py-2 rounded-lg font-bold ${statusStyle[barra.status] ?? 'bg-gray-200 text-gray-800'}`}>
+                {barra.status}
+              </div>
+              <div className="text-sm text-gray-600">{barra.note || ''}</div>
+
+              {(role === 'admin' || role === 'comex') && (
+                <div className="ml-auto">
+                  <button className="px-3 py-1 border rounded mr-2" onClick={() => setEditingBarra(true)}>Editar</button>
+                </div>
+              )}
+            </div>
+          </>
         ) : (
           !barraError && <p className="text-gray-600">Carregando...</p>
+        )}
+
+        {/* editor inline para admins/comex */}
+        {(role === 'admin' || role === 'comex') && editingBarra && (
+          <div className="mt-4 p-4 border rounded-lg bg-gray-50">
+            <label className="block mb-2 text-sm font-semibold">Status</label>
+            <select value={editStatus} onChange={e => setEditStatus(e.target.value)} className="p-2 border rounded w-full max-w-xs">
+              <option value="PRATICÁVEL">PRATICÁVEL</option>
+              <option value="IMPRATICÁVEL">IMPRATICÁVEL</option>
+              <option value="PRATICÁVEL C/ RESTRIÇÕES">PRATICÁVEL C/ RESTRIÇÕES</option>
+            </select>
+
+            <label className="block mt-3 mb-2 text-sm font-semibold">Observação (opcional)</label>
+            <textarea value={editNote} onChange={e => setEditNote(e.target.value)} className="w-full p-2 border rounded" rows={3} />
+
+            <div className="mt-3 flex gap-2">
+              <button className="px-4 py-2 bg-blue-600 text-white rounded" onClick={saveBarra}>Salvar</button>
+              <button
+                className="px-4 py-2 border rounded"
+                onClick={() => {
+                  setEditingBarra(false)
+                  setEditNote(barra?.note || '')
+                  setEditStatus(barra?.status || 'PRATICÁVEL')
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -210,9 +311,7 @@ export default function Home() {
       <div className="bg-white shadow p-6 rounded-xl border">
         <h2 className="text-xl font-bold mb-4">Processos Próximos (até 15 dias)</h2>
 
-        {processesError ? (
-          <div className="text-red-600 mb-3">Não foi possível carregar processos. Verifique permissões.</div>
-        ) : null}
+        {processesError && <div className="text-red-600 mb-3">Não foi possível carregar processos. Verifique permissões.</div>}
 
         {loading ? (
           <div className="text-gray-600">Carregando...</div>
